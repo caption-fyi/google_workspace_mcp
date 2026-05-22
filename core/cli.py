@@ -8,6 +8,8 @@ the full browser-based OAuth flow on every invocation.
 Usage::
 
     uv run workspace-cli list
+    uv run workspace-cli list --json
+    uv run workspace-cli list --json --tool selectSql
     uv run workspace-cli call search_gmail_messages query="is:unread" max_results=5
 """
 
@@ -68,7 +70,14 @@ def _build_oauth() -> OAuth:
     return OAuth(token_storage=storage)
 
 
-async def _list_tools(url: str) -> None:
+def _dump_model(value: Any) -> Any:
+    """Convert MCP/Pydantic models to JSON-serializable objects."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
+
+
+async def _list_tools(url: str, *, json_output: bool = False, tool_name: str | None = None) -> None:
     """Connect, authenticate once, and print available tools."""
     try:
         auth = _build_oauth()
@@ -80,9 +89,25 @@ async def _list_tools(url: str) -> None:
     try:
         async with Client(url, auth=auth) as client:
             tools = await client.list_tools()
+            initialize_result = _dump_model(client.initialize_result)
     except Exception as e:
         print(f"Error: failed to list tools ({type(e).__name__})", file=sys.stderr)
         sys.exit(1)
+
+    if tool_name is not None:
+        tools = [tool for tool in tools if tool.name == tool_name]
+        if not tools:
+            print(f"Error: tool {tool_name!r} was not found.", file=sys.stderr)
+            sys.exit(1)
+
+    if json_output:
+        payload = {
+            "initialize": initialize_result,
+            "tools": [_dump_model(tool) for tool in tools],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
     for tool in tools:
         desc = (tool.description or "").split("\n")[0]
         print(f"  {tool.name:40s} {desc}")
@@ -128,7 +153,16 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("list", help="List available tools")
+    list_parser = sub.add_parser("list", help="List available tools")
+    list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print LLM-facing MCP metadata including tool schemas, annotations, and server initialization data",
+    )
+    list_parser.add_argument(
+        "--tool",
+        help="Limit output to a single tool name, useful with --json for schema inspection",
+    )
 
     call_parser = sub.add_parser("call", help="Call a tool")
     call_parser.add_argument("tool", help="Tool name")
@@ -141,7 +175,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.command == "list":
-        asyncio.run(_list_tools(args.url))
+        asyncio.run(_list_tools(args.url, json_output=args.json, tool_name=args.tool))
     elif args.command == "call":
         asyncio.run(_call_tool(args.url, args.tool, args.args))
 

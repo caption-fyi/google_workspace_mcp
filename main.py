@@ -122,8 +122,8 @@ def resolve_callback_port_for_transport(transport: str) -> None:
         os.environ.pop("WORKSPACE_MCP_RESOLVED_PORT", None)
 
 
-# Single source of truth: service name -> module path.
-# VALID_SERVICES is derived from this mapping.
+# Single source of truth: Google service name -> module path.
+# VALID_SERVICES remains Google-only for OAuth scope and permission logic.
 SERVICE_MODULES = {
     "gmail": "gmail.gmail_tools",
     "drive": "gdrive.drive_tools",
@@ -139,6 +139,20 @@ SERVICE_MODULES = {
     "appscript": "gappsscript.apps_script_tools",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
+
+# Restricted or non-Google tool groups are explicit opt-ins. They are intentionally
+# not loaded by default because they do not map to Google OAuth scopes.
+NON_GOOGLE_TOOL_MODULES = {
+    "sql": "sql.sql_tools",
+}
+UNTIERED_TOOL_GROUP_TOOLS = {
+    "sql": {"selectSql", "insertSql"},
+}
+TOOL_GROUP_MODULES = {
+    **SERVICE_MODULES,
+    **NON_GOOGLE_TOOL_MODULES,
+}
+VALID_TOOL_GROUPS = frozenset(TOOL_GROUP_MODULES)
 
 
 def safe_print(text):
@@ -213,6 +227,45 @@ def narrow_permissions_to_services(
     }
 
 
+def get_google_services(tool_groups: list[str]) -> list[str]:
+    """Return Google services from a mixed list of tool groups."""
+    return [group for group in tool_groups if group in VALID_SERVICES]
+
+
+def get_untiered_tool_filter(tool_groups: list[str]) -> set[str]:
+    """Return tool names that should survive tier filtering for untiered groups."""
+    tool_names: set[str] = set()
+    for group in tool_groups:
+        tool_names.update(UNTIERED_TOOL_GROUP_TOOLS.get(group, set()))
+    return tool_names
+
+
+def resolve_tier_tool_group_selection(
+    tool_tier: str,
+    requested_tool_groups: list[str] | None,
+) -> tuple[list[str], set[str]]:
+    """Resolve imports and tool-name filtering for tiered startup."""
+    requested_google_services = (
+        get_google_services(requested_tool_groups)
+        if requested_tool_groups is not None
+        else None
+    )
+    tier_tools, suggested_services = resolve_tools_from_tier(
+        tool_tier, requested_google_services
+    )
+
+    if requested_tool_groups is not None:
+        tools_to_import = requested_tool_groups
+        enabled_tool_filter = set(tier_tools) | get_untiered_tool_filter(
+            requested_tool_groups
+        )
+    else:
+        tools_to_import = suggested_services
+        enabled_tool_filter = set(tier_tools)
+
+    return list(tools_to_import), enabled_tool_filter
+
+
 def _restore_stdout() -> None:
     """Restore the real stdout and replay any captured output to stderr."""
     captured_stdout = sys.stdout
@@ -256,8 +309,8 @@ def main():
     parser.add_argument(
         "--tools",
         nargs="*",
-        choices=sorted(VALID_SERVICES),
-        help="Specify which tools to register. If not provided, all tools are registered.",
+        choices=sorted(VALID_TOOL_GROUPS),
+        help="Specify which tool groups to register. If not provided, Google Workspace tools are registered.",
     )
     parser.add_argument(
         "--tool-tier",
@@ -305,12 +358,12 @@ def main():
         _env_tools = os.getenv("WORKSPACE_MCP_TOOLS", "").strip()
         if _env_tools:
             _parsed = [t.strip().lower() for t in _env_tools.split(",")]
-            _invalid = [t for t in _parsed if not t or t not in VALID_SERVICES]
+            _invalid = [t for t in _parsed if not t or t not in VALID_TOOL_GROUPS]
             if _invalid:
                 _exit_with_env_error(
                     "WORKSPACE_MCP_TOOLS",
                     _env_tools,
-                    "comma-separated valid service names",
+                    "comma-separated valid tool group names",
                 )
             args.tools = _parsed
     elif _cli_has_permissions and os.getenv("WORKSPACE_MCP_TOOLS", "").strip():
@@ -508,7 +561,7 @@ def main():
 
     # Import tool modules to register them with the MCP server via decorators.
     tool_imports = {
-        svc: partial(import_module, mod) for svc, mod in SERVICE_MODULES.items()
+        svc: partial(import_module, mod) for svc, mod in TOOL_GROUP_MODULES.items()
     }
 
     tool_icons = {
@@ -524,6 +577,7 @@ def main():
         "contacts": "👤",
         "search": "🔍",
         "appscript": "📜",
+        "sql": "🗄️",
     }
 
     # Determine which tools to import based on arguments
@@ -559,18 +613,12 @@ def main():
     elif args.tool_tier is not None:
         # Use tier-based tool selection, optionally filtered by services
         try:
-            tier_tools, suggested_services = resolve_tools_from_tier(
+            tools_to_import, enabled_tool_filter = resolve_tier_tool_group_selection(
                 args.tool_tier, args.tools
             )
 
-            # If --tools specified, use those services; otherwise use all services that have tier tools
-            if args.tools is not None:
-                tools_to_import = args.tools
-            else:
-                tools_to_import = suggested_services
-
             # Set the specific tools that should be registered
-            set_enabled_tool_names(set(tier_tools))
+            set_enabled_tool_names(enabled_tool_filter)
         except Exception as e:
             safe_print(f"❌ Error loading tools for tier '{args.tool_tier}': {e}")
             sys.exit(1)
@@ -580,8 +628,9 @@ def main():
         # Don't filter individual tools when using explicit service list only
         set_enabled_tool_names(None)
     else:
-        # Default: import all tools
-        tools_to_import = tool_imports.keys()
+        # Default: import all Google Workspace tools. Restricted non-Google groups
+        # are only loaded when explicitly selected.
+        tools_to_import = SERVICE_MODULES.keys()
         # Don't filter individual tools when importing all
         set_enabled_tool_names(None)
 
@@ -589,7 +638,8 @@ def main():
 
     from auth.scopes import set_enabled_tools, set_read_only
 
-    set_enabled_tools(list(tools_to_import))
+    google_tools_to_import = get_google_services(list(tools_to_import))
+    set_enabled_tools(google_tools_to_import)
     if args.read_only:
         set_read_only(True)
 
@@ -604,7 +654,7 @@ def main():
             failed.append((tool, exc))
 
     tool_summary = " ".join(f"{tool_icons.get(t, '🔧')} {t.title()}" for t in loaded)
-    safe_print(f"🛠️  Loaded {len(loaded)} services: {tool_summary}")
+    safe_print(f"🛠️  Loaded {len(loaded)} tool groups: {tool_summary}")
     for tool, exc in failed:
         safe_print(f"   ⚠️ Failed: {tool.title()} ({exc})")
 
@@ -619,7 +669,7 @@ def main():
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     filter_server_tools(server)
 
-    summary_parts = [f"{len(loaded)}/{len(tool_imports)} services"]
+    summary_parts = [f"{len(loaded)}/{len(tool_imports)} tool groups"]
     if args.tool_tier is not None:
         tier_desc = f"tier={args.tool_tier}"
         if args.tools is not None:

@@ -22,6 +22,7 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.scopes import PROTOCOL_AUTH_SCOPES, SCOPES, get_current_scopes  # noqa
+from auth.tool_policy import ToolPolicyMiddleware
 from core.config import (
     USER_GOOGLE_EMAIL,
     get_transport_mode,
@@ -90,6 +91,21 @@ def _compute_scope_fingerprint() -> str:
 
 # Custom FastMCP that adds secure middleware stack for OAuth 2.1
 class SecureFastMCP(FastMCP):
+    def _tool_accepts_user_google_email(self, name: str) -> bool:
+        """Return whether a registered tool exposes user_google_email."""
+        local_provider = getattr(self, "local_provider", None)
+        components = getattr(local_provider, "_components", {}) if local_provider else {}
+        for key, component in components.items():
+            if not key.startswith("tool:"):
+                continue
+            tool_name = key.split(":", 1)[1].rsplit("@", 1)[0]
+            if tool_name != name:
+                continue
+            parameters = getattr(component, "parameters", {}) or {}
+            properties = parameters.get("properties", {})
+            return "user_google_email" in properties
+        return False
+
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
         app = super().http_app(**kwargs)
@@ -145,6 +161,7 @@ class SecureFastMCP(FastMCP):
             not is_oauth21_enabled()
             and USER_GOOGLE_EMAIL
             and "user_google_email" not in arguments
+            and self._tool_accepts_user_google_email(name)
         ):
             arguments = {**arguments, "user_google_email": USER_GOOGLE_EMAIL}
         return await super().call_tool(name, arguments, *args, **kwargs)
@@ -167,6 +184,7 @@ server = SecureFastMCP(
 # Add the AuthInfo middleware to inject authentication into FastMCP context
 auth_info_middleware = AuthInfoMiddleware()
 server.add_middleware(auth_info_middleware)
+server.add_middleware(ToolPolicyMiddleware())
 
 
 def _parse_bool_env(value: str) -> bool:

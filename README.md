@@ -246,6 +246,48 @@ Service account mode:
 - Accepts per-request `user_google_email` as the impersonation subject.
 - Can restrict impersonation with `DWD_ALLOWED_DOMAINS`.
 
+## Cloud Deployment Defaults
+
+For a cloud-hosted, multi-user deployment where users authenticate through the same Google OAuth
+application, start with these conservative defaults:
+
+```bash
+export GOOGLE_OAUTH_CLIENT_ID="<google-oauth-client-id>"
+export GOOGLE_OAUTH_CLIENT_SECRET="<deployment-secret>"
+
+export MCP_ENABLE_OAUTH21=true
+export WORKSPACE_MCP_TRANSPORT=streamable-http
+export WORKSPACE_MCP_HOST=0.0.0.0
+export WORKSPACE_EXTERNAL_URL="<public-https-url>"
+export WORKSPACE_MCP_STATELESS_MODE=true
+export WORKSPACE_MCP_TOOL_TIER=core
+
+export WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND=valkey
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST="<valkey-host>"
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_PORT="<valkey-port>"
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_DB="<valkey-db>"
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USE_TLS=true
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_USERNAME="<valkey-username>"
+export WORKSPACE_MCP_OAUTH_PROXY_VALKEY_PASSWORD="<deployment-secret>"
+
+export WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS="https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,http://localhost:*/callback,http://127.0.0.1:*/callback"
+```
+
+These defaults mean:
+
+- `MCP_ENABLE_OAUTH21=true` enables OAuth 2.1 for hosted, bearer-token, multi-user auth.
+- `WORKSPACE_MCP_TRANSPORT=streamable-http` runs the server as an HTTP MCP endpoint.
+- `WORKSPACE_MCP_HOST=0.0.0.0` lets the cloud platform proxy reach the container.
+- `WORKSPACE_EXTERNAL_URL` makes OAuth metadata and callbacks use the public HTTPS URL.
+- `WORKSPACE_MCP_STATELESS_MODE=true` avoids relying on local per-user credential files.
+- `WORKSPACE_MCP_TOOL_TIER=core` keeps the organization-wide default tool surface conservative.
+- `WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND=valkey` and the Valkey connection variables persist
+  OAuth proxy state across restarts and multiple instances.
+- `WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS` restricts dynamic client redirects to Claude and
+  localhost callback development.
+
+Configure OAuth client secrets and Valkey credentials as deployment secrets.
+
 ## Configuration Reference
 
 ### Authentication
@@ -283,10 +325,22 @@ Service account mode:
 
 | Variable | Purpose |
 | --- | --- |
-| `WORKSPACE_MCP_TOOLS` | Comma-separated service list such as `gmail,drive,calendar`. |
+| `WORKSPACE_MCP_TOOLS` | Comma-separated service list such as `gmail,drive,calendar,sql`. |
 | `WORKSPACE_MCP_TOOL_TIER` | `core`, `extended`, or `complete`. |
 | `WORKSPACE_MCP_READ_ONLY` | `true`, `1`, or `yes` enables read-only scope mode. |
 | `WORKSPACE_MCP_PERMISSIONS` | Space-separated `service:level` entries. |
+
+### SQL Tools
+
+The optional `sql` tool group registers `selectSql` and `insertSql`. SQL text is not filtered by the MCP server; enforce access through least-privilege PostgreSQL roles in the connection strings.
+
+| Variable | Purpose |
+| --- | --- |
+| `WORKSPACE_MCP_SQL_SELECT_DATABASE_URL` | PostgreSQL connection string for `selectSql`; grant only the read permissions this tool should have. |
+| `WORKSPACE_MCP_SQL_INSERT_DATABASE_URL` | PostgreSQL connection string for `insertSql`; grant only the insert permissions this tool should have. |
+| `WORKSPACE_MCP_SQL_MAX_ROWS` | Maximum rows returned by SQL tools. Defaults to `100`; hard capped at `1000`. |
+| `WORKSPACE_MCP_SQL_STATEMENT_TIMEOUT_MS` | Per-query statement timeout. Defaults to `5000`; hard capped at `30000`. |
+| `WORKSPACE_MCP_SQL_POOL_MAX_SIZE` | Maximum asyncpg pool size per SQL tool connection. Defaults to `5`. |
 
 ### OAuth 2.1
 
@@ -467,6 +521,8 @@ claude mcp add --transport http workspace-mcp http://localhost:8000/mcp
 
 ```bash
 uv run workspace-cli list
+uv run workspace-cli list --json
+uv run workspace-cli list --json --tool selectSql
 uv run workspace-cli --url http://localhost:8000/mcp list
 uv run workspace-cli call search_gmail_messages query="is:unread" max_results=5
 
@@ -481,6 +537,8 @@ http://localhost:8000/mcp
 ```
 
 Override it with `--url` or `WORKSPACE_MCP_URL`.
+
+Use `workspace-cli list --json` to inspect the MCP metadata an LLM client can receive: server initialization data plus tool descriptions, input schemas, output schemas, annotations, and tags.
 
 ## Development
 

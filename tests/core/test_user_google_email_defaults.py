@@ -104,6 +104,25 @@ async def test_call_tool_injects_default_email_before_validation(monkeypatch):
     assert _result_text(result) == "configured@example.com"
 
 
+@pytest.mark.asyncio
+async def test_call_tool_does_not_inject_email_into_tools_without_parameter(
+    monkeypatch,
+):
+    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "configured@example.com")
+    monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
+
+    server = SecureFastMCP(name="test_server")
+
+    def echo_query(query: str) -> str:
+        return query
+
+    server.tool()(echo_query)
+
+    result = await server.call_tool("echo_query", {"query": "select 1"})
+
+    assert _result_text(result) == "select 1"
+
+
 def test_extract_oauth20_user_email_reads_runtime_env(monkeypatch):
     monkeypatch.setattr(service_decorator, "_ENV_USER_EMAIL", None)
     monkeypatch.setenv("USER_GOOGLE_EMAIL", "configured@example.com")

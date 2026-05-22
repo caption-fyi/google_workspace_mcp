@@ -50,6 +50,53 @@ def test_narrow_permissions_to_services_drops_non_selected_services():
     assert narrowed == {"gmail": "send"}
 
 
+def test_google_service_filter_ignores_non_google_groups():
+    assert main.get_google_services(["gmail", "sql", "drive"]) == ["gmail", "drive"]
+
+
+def test_untiered_tool_filter_maps_sql_group_to_sql_tools():
+    assert main.get_untiered_tool_filter(["gmail", "sql"]) == {
+        "selectSql",
+        "insertSql",
+    }
+
+
+def test_resolve_tier_tool_group_selection_keeps_selected_sql_group(monkeypatch):
+    def fake_resolve_tools_from_tier(tier, services):
+        assert tier == "core"
+        assert services == ["gmail"]
+        return ["search_gmail_messages"], ["gmail"]
+
+    monkeypatch.setattr(main, "resolve_tools_from_tier", fake_resolve_tools_from_tier)
+
+    tools_to_import, enabled_tool_filter = main.resolve_tier_tool_group_selection(
+        "core", ["gmail", "sql"]
+    )
+
+    assert tools_to_import == ["gmail", "sql"]
+    assert enabled_tool_filter == {
+        "search_gmail_messages",
+        "selectSql",
+        "insertSql",
+    }
+
+
+def test_resolve_tier_tool_group_selection_allows_sql_only(monkeypatch):
+    def fake_resolve_tools_from_tier(tier, services):
+        assert tier == "extended"
+        assert services == []
+        return [], []
+
+    monkeypatch.setattr(main, "resolve_tools_from_tier", fake_resolve_tools_from_tier)
+
+    tools_to_import, enabled_tool_filter = main.resolve_tier_tool_group_selection(
+        "extended", ["sql"]
+    )
+
+    assert tools_to_import == ["sql"]
+    assert enabled_tool_filter == {"selectSql", "insertSql"}
+
+
 def test_resolve_stdio_callback_port_marks_resolved_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -97,6 +144,74 @@ def test_permissions_and_tools_flags_are_rejected(monkeypatch, capsys):
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert "--permissions and --tools cannot be combined" in captured.err
+
+
+def test_invalid_workspace_mcp_tools_env_is_rejected(monkeypatch, capsys):
+    monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setenv("WORKSPACE_MCP_TOOLS", "gmail,bogus")
+    monkeypatch.delenv("WORKSPACE_MCP_PERMISSIONS", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "invalid WORKSPACE_MCP_TOOLS" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("env_tools", "expected_modules", "expected_google_scopes"),
+    [
+        ("sql", ["sql.sql_tools"], []),
+        ("gmail,sql", ["gmail.gmail_tools", "sql.sql_tools"], ["gmail"]),
+    ],
+)
+def test_workspace_mcp_tools_env_accepts_sql_group(
+    monkeypatch,
+    env_tools,
+    expected_modules,
+    expected_google_scopes,
+):
+    imported_modules = []
+    enabled_scope_groups = []
+
+    def fake_import_module(module_name):
+        imported_modules.append(module_name)
+        return object()
+
+    def fake_run(*args, **kwargs):  # noqa: ARG001
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
+    monkeypatch.setattr(main, "import_module", fake_import_module)
+    monkeypatch.setattr(main, "set_enabled_tool_names", lambda names: None)
+    monkeypatch.setattr(main, "wrap_server_tool_method", lambda server: None)
+    monkeypatch.setattr(main, "filter_server_tools", lambda server: None)
+    monkeypatch.setattr(main, "set_transport_mode", lambda transport: None)
+    monkeypatch.setattr(main, "get_selected_backend", lambda: "local")
+    monkeypatch.setattr(main, "is_stateless_mode", lambda: True)
+    monkeypatch.setattr(main, "is_service_account_enabled", lambda: False)
+    monkeypatch.setattr(main.server, "run", fake_run)
+    monkeypatch.setattr(
+        "auth.oauth_callback_server.ensure_oauth_callback_available",
+        lambda *args, **kwargs: (True, None),
+    )
+    monkeypatch.setattr(
+        "auth.scopes.set_enabled_tools",
+        lambda tools: enabled_scope_groups.append(tools),
+    )
+    monkeypatch.setattr("auth.scopes.set_read_only", lambda enabled: None)
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setenv("WORKSPACE_MCP_TOOLS", env_tools)
+    monkeypatch.delenv("WORKSPACE_MCP_PERMISSIONS", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+
+    assert exc.value.code == 0
+    assert imported_modules == expected_modules
+    assert enabled_scope_groups == [expected_google_scopes]
 
 
 def test_main_skips_gcs_store_initialization_in_service_account_mode(monkeypatch):
