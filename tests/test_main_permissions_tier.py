@@ -56,8 +56,9 @@ def test_google_service_filter_ignores_non_google_groups():
 
 def test_untiered_tool_filter_maps_sql_group_to_sql_tools():
     assert main.get_untiered_tool_filter(["gmail", "sql"]) == {
-        "selectSql",
-        "insertSql",
+        "sql_select",
+        "sql_insert",
+        "sql_help",
     }
 
 
@@ -76,8 +77,9 @@ def test_resolve_tier_tool_group_selection_keeps_selected_sql_group(monkeypatch)
     assert tools_to_import == ["gmail", "sql"]
     assert enabled_tool_filter == {
         "search_gmail_messages",
-        "selectSql",
-        "insertSql",
+        "sql_select",
+        "sql_insert",
+        "sql_help",
     }
 
 
@@ -94,7 +96,7 @@ def test_resolve_tier_tool_group_selection_allows_sql_only(monkeypatch):
     )
 
     assert tools_to_import == ["sql"]
-    assert enabled_tool_filter == {"selectSql", "insertSql"}
+    assert enabled_tool_filter == {"sql_select", "sql_insert", "sql_help"}
 
 
 def test_resolve_stdio_callback_port_marks_resolved_port(

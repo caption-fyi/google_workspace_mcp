@@ -16,6 +16,7 @@ from sql.sql_tools import (
     select_sql,
     set_insert_sql_runner,
     set_select_sql_runner,
+    sql_help,
 )
 
 
@@ -299,3 +300,8 @@ async def test_insert_sql_uses_separate_runner_and_returns_payload(monkeypatch):
     assert result["row_count"] == 1
     assert result["truncated"] is False
     assert isinstance(result["execution_time_ms"], float)
+
+
+@pytest.mark.asyncio
+async def test_sql_help_returns_placeholder_message():
+    assert await sql_help() == "INSERT_PLACEHOLDER"

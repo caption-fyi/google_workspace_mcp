@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 RESTRICTED_TOOL_GROUPS = frozenset({"sql"})
 TOOL_GROUP_BY_TOOL_NAME = {
-    "selectSql": "sql",
-    "insertSql": "sql",
+    "sql_select": "sql",
+    "sql_insert": "sql",
+    "sql_help": "sql",
 }
 
 

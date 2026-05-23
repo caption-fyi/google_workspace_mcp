@@ -25,7 +25,7 @@ class FakeTool:
                     }
                 },
             },
-            "annotations": {"readOnlyHint": self.name == "selectSql"},
+            "annotations": {"readOnlyHint": self.name == "sql_select"},
         }
 
 
@@ -48,8 +48,9 @@ class FakeClient:
 
     async def list_tools(self) -> list[FakeTool]:
         return [
-            FakeTool("selectSql", "Runs a PostgreSQL query."),
-            FakeTool("insertSql", "Runs an INSERT query."),
+            FakeTool("sql_select", "Runs a PostgreSQL query."),
+            FakeTool("sql_insert", "Runs an INSERT query."),
+            FakeTool("sql_help", "Returns SQL tool guidance."),
         ]
 
 
@@ -62,7 +63,7 @@ async def test_list_tools_json_prints_llm_visible_metadata(monkeypatch, capsys) 
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["initialize"]["serverInfo"]["name"] == "workspace-mcp"
-    assert [tool["name"] for tool in payload["tools"]] == ["selectSql", "insertSql"]
+    assert [tool["name"] for tool in payload["tools"]] == ["sql_select", "sql_insert", "sql_help"]
     assert payload["tools"][0]["inputSchema"]["properties"]["query"]["type"] == "string"
     assert payload["tools"][0]["annotations"]["readOnlyHint"] is True
 
@@ -72,10 +73,10 @@ async def test_list_tools_json_can_filter_to_single_tool(monkeypatch, capsys) ->
     monkeypatch.setattr(cli, "_build_oauth", lambda: object())
     monkeypatch.setattr(cli, "Client", FakeClient)
 
-    await cli._list_tools("http://example.test/mcp", json_output=True, tool_name="selectSql")
+    await cli._list_tools("http://example.test/mcp", json_output=True, tool_name="sql_select")
 
     payload = json.loads(capsys.readouterr().out)
-    assert [tool["name"] for tool in payload["tools"]] == ["selectSql"]
+    assert [tool["name"] for tool in payload["tools"]] == ["sql_select"]
 
 
 @pytest.mark.asyncio
@@ -86,9 +87,9 @@ async def test_list_tools_text_output_remains_compact(monkeypatch, capsys) -> No
     await cli._list_tools("http://example.test/mcp")
 
     output = capsys.readouterr().out
-    assert "selectSql" in output
+    assert "sql_select" in output
     assert "Runs a PostgreSQL query." in output
-    assert "2 tools available" in output
+    assert "3 tools available" in output
 
 
 @pytest.mark.asyncio

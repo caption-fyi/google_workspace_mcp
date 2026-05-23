@@ -332,12 +332,12 @@ Configure OAuth client secrets and Valkey credentials as deployment secrets.
 
 ### SQL Tools
 
-The optional `sql` tool group registers `selectSql` and `insertSql`. SQL text is not filtered by the MCP server; enforce access through least-privilege PostgreSQL roles in the connection strings.
+The optional `sql` tool group registers `sql_select`, `sql_insert`, and `sql_help`. SQL text is not filtered by the MCP server; enforce access through least-privilege PostgreSQL roles in the connection strings.
 
 | Variable | Purpose |
 | --- | --- |
-| `WORKSPACE_MCP_SQL_SELECT_DATABASE_URL` | PostgreSQL connection string for `selectSql`; grant only the read permissions this tool should have. |
-| `WORKSPACE_MCP_SQL_INSERT_DATABASE_URL` | PostgreSQL connection string for `insertSql`; grant only the insert permissions this tool should have. |
+| `WORKSPACE_MCP_SQL_SELECT_DATABASE_URL` | PostgreSQL connection string for `sql_select`; grant only the read permissions this tool should have. |
+| `WORKSPACE_MCP_SQL_INSERT_DATABASE_URL` | PostgreSQL connection string for `sql_insert`; grant only the insert permissions this tool should have. |
 | `WORKSPACE_MCP_SQL_MAX_ROWS` | Maximum rows returned by SQL tools. Defaults to `100`; hard capped at `1000`. |
 | `WORKSPACE_MCP_SQL_STATEMENT_TIMEOUT_MS` | Per-query statement timeout. Defaults to `5000`; hard capped at `30000`. |
 | `WORKSPACE_MCP_SQL_POOL_MAX_SIZE` | Maximum asyncpg pool size per SQL tool connection. Defaults to `5`. |
@@ -522,7 +522,7 @@ claude mcp add --transport http workspace-mcp http://localhost:8000/mcp
 ```bash
 uv run workspace-cli list
 uv run workspace-cli list --json
-uv run workspace-cli list --json --tool selectSql
+uv run workspace-cli list --json --tool sql_select
 uv run workspace-cli --url http://localhost:8000/mcp list
 uv run workspace-cli call search_gmail_messages query="is:unread" max_results=5
 

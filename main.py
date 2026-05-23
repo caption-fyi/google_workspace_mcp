@@ -146,7 +146,7 @@ NON_GOOGLE_TOOL_MODULES = {
     "sql": "sql.sql_tools",
 }
 UNTIERED_TOOL_GROUP_TOOLS = {
-    "sql": {"selectSql", "insertSql"},
+    "sql": {"sql_select", "sql_insert", "sql_help"},
 }
 TOOL_GROUP_MODULES = {
     **SERVICE_MODULES,

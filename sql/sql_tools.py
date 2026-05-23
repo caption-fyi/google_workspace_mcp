@@ -164,7 +164,7 @@ def set_insert_sql_runner(runner: AsyncpgSqlRunner | None) -> None:
 
 
 @server.tool(
-    name="selectSql",
+    name="sql_select",
     title="Select SQL",
     description="Runs a PostgreSQL query through the configured SELECT role and returns capped rows.",
     tags={"beta"},
@@ -211,7 +211,7 @@ async def select_sql(
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
     logger.info(
-        "selectSql completed user=%s tool_group=sql query_digest=%s duration_ms=%s row_count=%s truncated=%s",
+        "sql_select completed user=%s tool_group=sql query_digest=%s duration_ms=%s row_count=%s truncated=%s",
         user_email,
         query_digest,
         duration_ms,
@@ -229,7 +229,7 @@ async def select_sql(
 
 
 @server.tool(
-    name="insertSql",
+    name="sql_insert",
     title="Insert SQL",
     description="Runs a PostgreSQL query through the configured INSERT role and returns status plus capped rows.",
     tags={"beta"},
@@ -276,7 +276,7 @@ async def insert_sql(
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
     logger.info(
-        "insertSql completed user=%s tool_group=sql query_digest=%s duration_ms=%s row_count=%s truncated=%s status=%s",
+        "sql_insert completed user=%s tool_group=sql query_digest=%s duration_ms=%s row_count=%s truncated=%s status=%s",
         user_email,
         query_digest,
         duration_ms,
@@ -293,6 +293,23 @@ async def insert_sql(
         "truncated": truncated,
         "execution_time_ms": duration_ms,
     }
+
+
+@server.tool(
+    name="sql_help",
+    title="SQL Help",
+    description="Returns guidance for using the SQL tools.",
+    tags={"beta"},
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def sql_help() -> str:
+    """Return guidance for using the SQL tools."""
+    return "INSERT_PLACEHOLDER"
 
 
 def _resolve_effective_max_rows(requested_max_rows: int | None) -> int:

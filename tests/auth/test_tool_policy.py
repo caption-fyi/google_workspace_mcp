@@ -82,7 +82,7 @@ async def test_unconfigured_policy_allows_unrestricted_google_tool():
 async def test_unconfigured_policy_denies_restricted_sql_tool():
     service = ToolPolicyService(None)
 
-    decision = await service.authorize(email="user@example.com", tool_name="selectSql")
+    decision = await service.authorize(email="user@example.com", tool_name="sql_select")
 
     assert not decision.allowed
     assert "WORKSPACE_MCP_POLICY_DATABASE_URL" in decision.reason
@@ -125,7 +125,7 @@ async def test_policy_allows_unexpired_restricted_permission():
     )
 
     decision = await service.authorize(
-        email="user@example.com", tool_name="insertSql", now=now
+        email="user@example.com", tool_name="sql_insert", now=now
     )
 
     assert decision.allowed
@@ -142,7 +142,7 @@ async def test_policy_denies_disabled_restricted_permission():
     )
 
     decision = await service.authorize(
-        email="user@example.com", tool_name="selectSql", now=now
+        email="user@example.com", tool_name="sql_select", now=now
     )
 
     assert not decision.allowed
@@ -161,7 +161,7 @@ async def test_policy_denies_expired_restricted_permission():
     )
 
     decision = await service.authorize(
-        email="user@example.com", tool_name="insertSql", now=now
+        email="user@example.com", tool_name="sql_insert", now=now
     )
 
     assert not decision.allowed
@@ -171,9 +171,7 @@ async def test_policy_denies_expired_restricted_permission():
 async def test_policy_fail_closed_on_database_error():
     service = ToolPolicyService(FakePolicyStore(fail_domains=True))
 
-    decision = await service.authorize(
-        email="user@example.com", tool_name="selectSql"
-    )
+    decision = await service.authorize(email="user@example.com", tool_name="sql_select")
 
     assert not decision.allowed
     assert "lookup failed" in decision.reason
@@ -183,7 +181,7 @@ async def test_policy_fail_closed_on_database_error():
 async def test_policy_middleware_enforces_after_auth_context(monkeypatch):
     middleware = ToolPolicyMiddleware()
     context = SimpleNamespace(
-        message=SimpleNamespace(name="selectSql", arguments={}),
+        message=SimpleNamespace(name="sql_select", arguments={}),
         fastmcp_context=FakeFastMCPContext("user@example.com"),
     )
     observed = {}
@@ -201,14 +199,14 @@ async def test_policy_middleware_enforces_after_auth_context(monkeypatch):
         return "ok"
 
     assert await middleware.on_call_tool(context, call_next) == "ok"
-    assert observed == {"email": "user@example.com", "tool_name": "selectSql"}
+    assert observed == {"email": "user@example.com", "tool_name": "sql_select"}
 
 
 @pytest.mark.asyncio
 async def test_policy_middleware_raises_tool_error_when_denied(monkeypatch):
     middleware = ToolPolicyMiddleware()
     context = SimpleNamespace(
-        message=SimpleNamespace(name="insertSql", arguments={}),
+        message=SimpleNamespace(name="sql_insert", arguments={}),
         fastmcp_context=FakeFastMCPContext("user@example.com"),
     )
 

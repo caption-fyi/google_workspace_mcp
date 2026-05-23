@@ -9,7 +9,7 @@ Usage::
 
     uv run workspace-cli list
     uv run workspace-cli list --json
-    uv run workspace-cli list --json --tool selectSql
+    uv run workspace-cli list --json --tool sql_select
     uv run workspace-cli call search_gmail_messages query="is:unread" max_results=5
 """
 
