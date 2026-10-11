@@ -332,15 +332,20 @@ Configure OAuth client secrets and Valkey credentials as deployment secrets.
 
 ### SQL Tools
 
-The optional `sql` tool group registers `sql_select`, `sql_insert`, and `sql_help`. SQL text is not filtered by the MCP server; enforce access through least-privilege PostgreSQL roles in the connection strings.
+The optional `sql` tool group registers `sql_select` and `sql_help`. PostgreSQL privileges control SQL access; use a least-privilege read role and keep MCP caller authentication enabled.
 
 | Variable | Purpose |
 | --- | --- |
 | `WORKSPACE_MCP_SQL_SELECT_DATABASE_URL` | PostgreSQL connection string for `sql_select`; grant only the read permissions this tool should have. |
-| `WORKSPACE_MCP_SQL_INSERT_DATABASE_URL` | PostgreSQL connection string for `sql_insert`; grant only the insert permissions this tool should have. |
 | `WORKSPACE_MCP_SQL_MAX_ROWS` | Maximum rows returned by SQL tools. Defaults to `100`; hard capped at `1000`. |
 | `WORKSPACE_MCP_SQL_STATEMENT_TIMEOUT_MS` | Per-query statement timeout. Defaults to `5000`; hard capped at `30000`. |
 | `WORKSPACE_MCP_SQL_POOL_MAX_SIZE` | Maximum asyncpg pool size per SQL tool connection. Defaults to `5`. |
+
+**Breaking change:** `sql_insert` is removed. Existing clients must stop calling it; `WORKSPACE_MCP_SQL_INSERT_DATABASE_URL` is unused. `sql_select` and `sql_help` retain their response schemas.
+
+SQL tools require `WORKSPACE_MCP_POLICY_DATABASE_URL` and an authenticated caller allowed by the policy database. Policy identity comes only from the server's `authenticated_user_email` context state. Neither a supplied `user_google_email` nor configured `USER_GOOGLE_EMAIL` authorizes a caller; account-selection defaults elsewhere still apply.
+
+Policy database authorization has a combined five-second budget for pool creation, acquisition, domain lookup, and tool-permission lookup, plus at most one second for cleanup. Missing identity, policy denial, database failure, or timeout denies access.
 
 ### OAuth 2.1
 

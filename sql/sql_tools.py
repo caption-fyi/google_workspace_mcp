@@ -68,7 +68,6 @@ class AsyncpgSqlRunner:
         max_rows: int,
         statement_timeout_ms: int,
     ) -> tuple[list[str], list[dict[str, Any]], bool]:
-        wrapped_query = f"select * from ({query}) as mcp_readonly_query limit $1"
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
@@ -77,9 +76,11 @@ class AsyncpgSqlRunner:
                         "select set_config('statement_timeout', $1, true)",
                         f"{statement_timeout_ms}ms",
                     )
-                    statement = await conn.prepare(wrapped_query)
+                    statement = await conn.prepare(query)
                     columns = [attr.name for attr in statement.get_attributes()]
-                    records = await statement.fetch(max_rows + 1)
+                    # Fetch one extra row to detect truncation without rewriting SQL.
+                    cursor = await statement.cursor()
+                    records = await cursor.fetch(max_rows + 1)
         except ToolExecutionError:
             raise
         except Exception as exc:
@@ -93,42 +94,8 @@ class AsyncpgSqlRunner:
         ]
         return columns, rows, truncated
 
-    async def run_insert_query(
-        self,
-        query: str,
-        *,
-        max_rows: int,
-        statement_timeout_ms: int,
-    ) -> tuple[str | None, list[str], list[dict[str, Any]], bool]:
-        try:
-            pool = await self._get_pool()
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    await conn.execute(
-                        "select set_config('statement_timeout', $1, true)",
-                        f"{statement_timeout_ms}ms",
-                    )
-                    statement = await conn.prepare(query)
-                    columns = [attr.name for attr in statement.get_attributes()]
-                    records = await statement.fetch()
-                    get_status = getattr(statement, "get_statusmsg", None)
-                    status = get_status() if get_status else None
-        except ToolExecutionError:
-            raise
-        except Exception as exc:
-            raise ToolExecutionError(str(exc)) from exc
-
-        truncated = len(records) > max_rows
-        visible_records = records[:max_rows]
-        rows = [
-            {column: _serialize_value(record[column]) for column in columns}
-            for record in visible_records
-        ]
-        return status, columns, rows, truncated
-
 
 _select_sql_runner: AsyncpgSqlRunner | None = None
-_insert_sql_runner: AsyncpgSqlRunner | None = None
 
 
 def get_select_sql_runner() -> AsyncpgSqlRunner:
@@ -141,26 +108,10 @@ def get_select_sql_runner() -> AsyncpgSqlRunner:
     return _select_sql_runner
 
 
-def get_insert_sql_runner() -> AsyncpgSqlRunner:
-    """Return the process-wide INSERT SQL runner."""
-    global _insert_sql_runner
-    if _insert_sql_runner is None:
-        config_name = "WORKSPACE_MCP_SQL_INSERT_DATABASE_URL"
-        database_url = os.getenv(config_name, "").strip()
-        _insert_sql_runner = AsyncpgSqlRunner(database_url, config_name=config_name)
-    return _insert_sql_runner
-
-
 def set_select_sql_runner(runner: AsyncpgSqlRunner | None) -> None:
     """Replace the process-wide SELECT SQL runner for tests."""
     global _select_sql_runner
     _select_sql_runner = runner
-
-
-def set_insert_sql_runner(runner: AsyncpgSqlRunner | None) -> None:
-    """Replace the process-wide INSERT SQL runner for tests."""
-    global _insert_sql_runner
-    _insert_sql_runner = runner
 
 
 @server.tool(
@@ -229,73 +180,6 @@ async def select_sql(
 
 
 @server.tool(
-    name="sql_insert",
-    title="Insert SQL",
-    description="Runs a PostgreSQL query through the configured INSERT role and returns status plus capped rows.",
-    tags={"beta"},
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-async def insert_sql(
-    query: Annotated[
-        str,
-        Field(
-            description="PostgreSQL query to execute verbatim using WORKSPACE_MCP_SQL_INSERT_DATABASE_URL.",
-        ),
-    ],
-    max_rows: Annotated[
-        int | None,
-        Field(
-            default=None,
-            ge=1,
-            le=ABSOLUTE_SQL_MAX_ROWS,
-            description="Optional cap for rows returned by INSERT ... RETURNING, limited by WORKSPACE_MCP_SQL_MAX_ROWS.",
-        ),
-    ] = None,
-) -> dict[str, Any]:
-    """Run a PostgreSQL query through the configured INSERT role."""
-    effective_max_rows = _resolve_effective_max_rows(max_rows)
-    statement_timeout_ms = _get_positive_int_env(
-        "WORKSPACE_MCP_SQL_STATEMENT_TIMEOUT_MS",
-        DEFAULT_SQL_STATEMENT_TIMEOUT_MS,
-        maximum=ABSOLUTE_SQL_STATEMENT_TIMEOUT_MS,
-    )
-    user_email = await _get_current_user_email()
-    query_digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
-    started = time.perf_counter()
-
-    status, columns, rows, truncated = await get_insert_sql_runner().run_insert_query(
-        query,
-        max_rows=effective_max_rows,
-        statement_timeout_ms=statement_timeout_ms,
-    )
-    duration_ms = round((time.perf_counter() - started) * 1000, 2)
-
-    logger.info(
-        "sql_insert completed user=%s tool_group=sql query_digest=%s duration_ms=%s row_count=%s truncated=%s status=%s",
-        user_email,
-        query_digest,
-        duration_ms,
-        len(rows),
-        truncated,
-        status,
-    )
-
-    return {
-        "status": status,
-        "columns": columns,
-        "rows": rows,
-        "row_count": len(rows),
-        "truncated": truncated,
-        "execution_time_ms": duration_ms,
-    }
-
-
-@server.tool(
     name="sql_help",
     title="SQL Help",
     description="Returns guidance for using the SQL tools.",
@@ -342,8 +226,8 @@ async def _get_current_user_email() -> str | None:
     except Exception:
         context = None
     if context is None:
-        return os.getenv("USER_GOOGLE_EMAIL")
-    return await resolve_authenticated_email(context, {})
+        return None
+    return await resolve_authenticated_email(context)
 
 
 def _serialize_value(value: Any) -> Any:

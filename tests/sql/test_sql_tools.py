@@ -2,19 +2,21 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from fastmcp.exceptions import ToolError
+from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError, ToolError
 
+import core.tool_registry as registry
+import sql.sql_tools as sql_tools
 from sql.sql_tools import (
     AsyncpgSqlRunner,
     _serialize_value,
-    get_insert_sql_runner,
     get_select_sql_runner,
-    insert_sql,
     select_sql,
-    set_insert_sql_runner,
     set_select_sql_runner,
     sql_help,
 )
@@ -38,21 +40,80 @@ def test_serialize_value_converts_non_json_scalars():
     }
 
 
-def test_sql_runners_use_separate_connection_strings(monkeypatch):
+def test_select_connection(monkeypatch):
     monkeypatch.setenv("WORKSPACE_MCP_SQL_SELECT_DATABASE_URL", "postgresql://select")
-    monkeypatch.setenv("WORKSPACE_MCP_SQL_INSERT_DATABASE_URL", "postgresql://insert")
     set_select_sql_runner(None)
-    set_insert_sql_runner(None)
 
     try:
         select_runner = get_select_sql_runner()
-        insert_runner = get_insert_sql_runner()
     finally:
         set_select_sql_runner(None)
-        set_insert_sql_runner(None)
 
     assert select_runner._database_url == "postgresql://select"
-    assert insert_runner._database_url == "postgresql://insert"
+
+
+@pytest.fixture
+def sql_server():
+    # Copy registrations so read-only filtering does not mutate the shared server.
+    isolated = FastMCP(name="sql_test")
+    for name, tool in registry.get_tool_components(sql_tools.server).items():
+        if name.startswith("sql_"):
+            isolated.add_tool(tool)
+    return isolated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_sql_discovery(sql_server, monkeypatch, read_only):
+    monkeypatch.setattr(registry, "get_enabled_tools", lambda: None)
+    monkeypatch.setattr(registry, "is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr(registry, "is_read_only_mode", lambda: read_only)
+    monkeypatch.setattr(registry, "is_permissions_mode", lambda: False)
+
+    registry.filter_server_tools(sql_server)
+    tools = await sql_server.list_tools(run_middleware=False)
+
+    assert {tool.name for tool in tools} == {"sql_select", "sql_help"}
+
+
+@pytest.mark.asyncio
+async def test_insert_cannot_execute(sql_server, monkeypatch):
+    get_pool = AsyncMock(side_effect=AssertionError("SQL must not execute"))
+    monkeypatch.setattr(AsyncpgSqlRunner, "_get_pool", get_pool)
+
+    with pytest.raises(NotFoundError, match="sql_insert"):
+        await sql_server.call_tool(
+            "sql_insert",
+            {"query": "insert into accounts default values"},
+            run_middleware=False,
+        )
+
+    get_pool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context_error", [None, RuntimeError("No request context")])
+async def test_audit_no_env_identity(monkeypatch, context_error):
+    def get_context():
+        if context_error is not None:
+            raise context_error
+        return None
+
+    monkeypatch.setattr(sql_tools, "get_context", get_context)
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "configured@example.com")
+
+    assert await sql_tools._get_current_user_email() is None
+
+
+@pytest.mark.asyncio
+async def test_audit_context_identity(monkeypatch):
+    context = SimpleNamespace()
+    resolver = AsyncMock(return_value="authenticated@example.com")
+    monkeypatch.setattr(sql_tools, "get_context", lambda: context)
+    monkeypatch.setattr(sql_tools, "resolve_authenticated_email", resolver)
+
+    assert await sql_tools._get_current_user_email() == "authenticated@example.com"
+    resolver.assert_awaited_once_with(context)
 
 
 class FakeAcquireContext:
@@ -63,6 +124,7 @@ class FakeAcquireContext:
         return self.conn
 
     async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+        self.conn.released = True
         return False
 
 
@@ -73,9 +135,13 @@ class FakeTransactionContext:
 
     async def __aenter__(self):
         self.conn.readonly_values.append(self.readonly)
+        self.conn.in_transaction = True
         return self
 
     async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+        self.conn.in_transaction = False
+        self.conn.transaction_error = exc_type
+        self.conn.transaction_closed = True
         return False
 
 
@@ -92,6 +158,18 @@ class FakeAttribute:
         self.name = name
 
 
+class FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def fetch(self, limit):
+        assert self.conn.in_transaction
+        self.conn.fetch_limit = limit
+        if self.conn.fetch_error is not None:
+            raise RuntimeError(self.conn.fetch_error)
+        return self.conn.records[:limit]
+
+
 class FakeStatement:
     def __init__(self, conn):
         self.conn = conn
@@ -99,16 +177,10 @@ class FakeStatement:
     def get_attributes(self):
         return [FakeAttribute(column) for column in self.conn.columns]
 
-    async def fetch(self, limit=None):
-        self.conn.fetch_limit = limit
-        if self.conn.fetch_error is not None:
-            raise RuntimeError(self.conn.fetch_error)
-        if limit is None:
-            return self.conn.records
-        return self.conn.records[:limit]
-
-    def get_statusmsg(self):
-        return self.conn.status
+    async def cursor(self):
+        assert self.conn.in_transaction
+        self.conn.cursor_opened = True
+        return FakeCursor(self.conn)
 
 
 class FakeConnection:
@@ -117,21 +189,28 @@ class FakeConnection:
         *,
         columns=None,
         records=None,
-        status=None,
         fetch_error=None,
     ):
         self.columns = columns or ["id", "name"]
-        self.records = records or [
-            {"id": 1, "name": "alpha"},
-            {"id": 2, "name": "beta"},
-            {"id": 3, "name": "gamma"},
-        ]
-        self.status = status
+        self.records = (
+            records
+            if records is not None
+            else [
+                {"id": 1, "name": "alpha"},
+                {"id": 2, "name": "beta"},
+                {"id": 3, "name": "gamma"},
+            ]
+        )
         self.fetch_error = fetch_error
         self.readonly_values = []
         self.executed = []
         self.prepared_query = None
         self.fetch_limit = None
+        self.in_transaction = False
+        self.cursor_opened = False
+        self.transaction_closed = False
+        self.transaction_error = None
+        self.released = False
 
     def transaction(self, *, readonly=False):
         return FakeTransactionContext(self, readonly)
@@ -145,11 +224,21 @@ class FakeConnection:
 
 
 @pytest.mark.asyncio
-async def test_asyncpg_sql_runner_select_wraps_query_verbatim_and_caps_returned_rows():
+@pytest.mark.parametrize(
+    "query",
+    [
+        " select id, name from accounts; ",
+        "select id, name from accounts -- trailing comment",
+        "select id, name from accounts; -- trailing comment",
+        "select id, name from accounts /* trailing comment */",
+        "select id, name from accounts; /* trailing comment */",
+        "select '; -- /* */' as name",
+    ],
+)
+async def test_select_preserves_sql(query):
     conn = FakeConnection()
     runner = AsyncpgSqlRunner("postgresql://example")
     runner._pool = FakePool(conn)
-    query = " select id, name from accounts; "
 
     columns, rows, truncated = await runner.run_select_query(
         query,
@@ -161,46 +250,40 @@ async def test_asyncpg_sql_runner_select_wraps_query_verbatim_and_caps_returned_
     assert conn.executed == [
         ("select set_config('statement_timeout', $1, true)", ("750ms",))
     ]
-    assert conn.prepared_query == (
-        f"select * from ({query}) as mcp_readonly_query limit $1"
-    )
+    assert conn.prepared_query == query
+    assert conn.cursor_opened is True
     assert conn.fetch_limit == 3
     assert columns == ["id", "name"]
     assert rows == [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
     assert truncated is True
+    assert conn.transaction_closed is True
+    assert conn.released is True
 
 
 @pytest.mark.asyncio
-async def test_asyncpg_sql_runner_insert_passes_query_verbatim_and_returns_status():
-    conn = FakeConnection(
-        columns=["id"],
-        records=[{"id": 1}, {"id": 2}, {"id": 3}],
-        status="INSERT 0 3",
-    )
+@pytest.mark.parametrize("row_count", [0, 1, 2, 3, 100])
+async def test_select_row_bounds(row_count):
+    records = [{"id": index} for index in range(row_count)]
+    conn = FakeConnection(columns=["id"], records=records)
     runner = AsyncpgSqlRunner("postgresql://example")
     runner._pool = FakePool(conn)
-    query = "insert into accounts(name) values ('alpha') returning id"
 
-    status, columns, rows, truncated = await runner.run_insert_query(
-        query,
+    columns, rows, truncated = await runner.run_select_query(
+        "select id from accounts",
         max_rows=2,
         statement_timeout_ms=750,
     )
 
-    assert conn.readonly_values == [False]
-    assert conn.executed == [
-        ("select set_config('statement_timeout', $1, true)", ("750ms",))
-    ]
-    assert conn.prepared_query == query
-    assert conn.fetch_limit is None
-    assert status == "INSERT 0 3"
+    assert conn.fetch_limit == 3
     assert columns == ["id"]
-    assert rows == [{"id": 1}, {"id": 2}]
-    assert truncated is True
+    assert rows == records[:2]
+    assert truncated is (row_count > 2)
+    assert conn.transaction_closed is True
+    assert conn.released is True
 
 
 @pytest.mark.asyncio
-async def test_asyncpg_sql_runner_returns_query_errors_verbatim():
+async def test_select_error_cleanup():
     conn = FakeConnection(fetch_error="permission denied for table accounts")
     runner = AsyncpgSqlRunner("postgresql://example")
     runner._pool = FakePool(conn)
@@ -211,6 +294,10 @@ async def test_asyncpg_sql_runner_returns_query_errors_verbatim():
             max_rows=2,
             statement_timeout_ms=750,
         )
+
+    assert conn.transaction_closed is True
+    assert conn.transaction_error is RuntimeError
+    assert conn.released is True
 
 
 class FakeSelectRunner:
@@ -250,51 +337,6 @@ async def test_select_sql_passes_query_verbatim_and_returns_payload(monkeypatch)
             "statement_timeout_ms": 250,
         }
     ]
-    assert result["columns"] == ["id"]
-    assert result["rows"] == [{"id": 1}]
-    assert result["row_count"] == 1
-    assert result["truncated"] is False
-    assert isinstance(result["execution_time_ms"], float)
-
-
-class FakeInsertRunner:
-    def __init__(self):
-        self.calls = []
-
-    async def run_insert_query(self, query, *, max_rows, statement_timeout_ms):
-        self.calls.append(
-            {
-                "query": query,
-                "max_rows": max_rows,
-                "statement_timeout_ms": statement_timeout_ms,
-            }
-        )
-        return "INSERT 0 1", ["id"], [{"id": 1}], False
-
-
-@pytest.mark.asyncio
-async def test_insert_sql_uses_separate_runner_and_returns_payload(monkeypatch):
-    runner = FakeInsertRunner()
-    set_insert_sql_runner(runner)
-    monkeypatch.setenv("WORKSPACE_MCP_SQL_MAX_ROWS", "5")
-    monkeypatch.setenv("WORKSPACE_MCP_SQL_STATEMENT_TIMEOUT_MS", "250")
-    monkeypatch.setenv("USER_GOOGLE_EMAIL", "user@example.com")
-    monkeypatch.setattr("sql.sql_tools.get_context", lambda: None)
-    query = "insert into accounts(name) values ('alpha') returning id"
-
-    try:
-        result = await insert_sql(query, max_rows=10)
-    finally:
-        set_insert_sql_runner(None)
-
-    assert runner.calls == [
-        {
-            "query": query,
-            "max_rows": 5,
-            "statement_timeout_ms": 250,
-        }
-    ]
-    assert result["status"] == "INSERT 0 1"
     assert result["columns"] == ["id"]
     assert result["rows"] == [{"id": 1}]
     assert result["row_count"] == 1
