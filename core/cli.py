@@ -77,7 +77,23 @@ def _dump_model(value: Any) -> Any:
     return value
 
 
-async def _list_tools(url: str, *, json_output: bool = False, tool_name: str | None = None) -> None:
+def _coerce_cli_value(value: str) -> Any:
+    """Parse a CLI value as JSON, but keep the raw text whenever it is a string.
+
+    ``max_results=5`` still becomes ``int(5)``, while a quoted value such as
+    ``query='"grow therapy"'`` keeps its quotes instead of being unwrapped into
+    ``grow therapy``, which would break Gmail phrase matching.
+    """
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return value if isinstance(parsed, str) else parsed
+
+
+async def _list_tools(
+    url: str, *, json_output: bool = False, tool_name: str | None = None
+) -> None:
     """Connect, authenticate once, and print available tools."""
     try:
         auth = _build_oauth()
@@ -122,10 +138,7 @@ async def _call_tool(url: str, tool_name: str, raw_args: list[str]) -> None:
             print(f"Error: argument '{arg}' must be in key=value form", file=sys.stderr)
             sys.exit(1)
         k, v = arg.split("=", 1)
-        try:
-            kwargs[k] = json.loads(v)
-        except json.JSONDecodeError:
-            kwargs[k] = v
+        kwargs[k] = _coerce_cli_value(v)
 
     async with Client(url, auth=_build_oauth()) as client:
         result = await client.call_tool(tool_name, kwargs)

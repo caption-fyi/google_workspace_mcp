@@ -72,7 +72,9 @@ async def test_list_tools_json_can_filter_to_single_tool(monkeypatch, capsys) ->
     monkeypatch.setattr(cli, "_build_oauth", lambda: object())
     monkeypatch.setattr(cli, "Client", FakeClient)
 
-    await cli._list_tools("http://example.test/mcp", json_output=True, tool_name="sql_select")
+    await cli._list_tools(
+        "http://example.test/mcp", json_output=True, tool_name="sql_select"
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert [tool["name"] for tool in payload["tools"]] == ["sql_select"]
@@ -92,7 +94,9 @@ async def test_list_tools_text_output_remains_compact(monkeypatch, capsys) -> No
 
 
 @pytest.mark.asyncio
-async def test_list_tools_filter_errors_when_tool_is_missing(monkeypatch, capsys) -> None:
+async def test_list_tools_filter_errors_when_tool_is_missing(
+    monkeypatch, capsys
+) -> None:
     monkeypatch.setattr(cli, "_build_oauth", lambda: object())
     monkeypatch.setattr(cli, "Client", FakeClient)
 

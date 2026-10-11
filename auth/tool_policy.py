@@ -32,9 +32,7 @@ class PolicyDatabaseError(RuntimeError):
     """Raised when the policy database cannot be checked."""
 
 
-async def _wait_policy(
-    call: Awaitable[_PolicyResult], timeout: float
-) -> _PolicyResult:
+async def _wait_policy(call: Awaitable[_PolicyResult], timeout: float) -> _PolicyResult:
     # Shield the waiter so Python 3.10/3.11 cannot swallow cancellation at completion.
     waiter = asyncio.create_task(asyncio.wait_for(call, timeout=timeout))
     try:

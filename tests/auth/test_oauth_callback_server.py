@@ -1,5 +1,5 @@
 import errno
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Any, Optional, Tuple, Type
 
 import pytest
@@ -217,6 +217,49 @@ def test_start_rejects_eaddrinuse_when_callback_probe_does_not_match(
     assert success is False
     assert "already in use" in error
     assert server.is_running is False
+
+
+def test_ensure_stdio_callback_is_noop_outside_stdio(monkeypatch):
+    monkeypatch.setattr(
+        oauth_callback_server, "get_transport_mode", lambda: "streamable-http"
+    )
+
+    def fail_if_called(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("callback server must not bind a port outside stdio")
+
+    monkeypatch.setattr(
+        oauth_callback_server, "ensure_oauth_callback_available", fail_if_called
+    )
+
+    success, error = oauth_callback_server.ensure_stdio_oauth_callback_available()
+
+    assert success is True
+    assert error == ""
+
+
+def test_ensure_stdio_callback_starts_server_on_demand(monkeypatch):
+    monkeypatch.setattr(oauth_callback_server, "get_transport_mode", lambda: "stdio")
+    monkeypatch.setattr(
+        oauth_callback_server,
+        "get_oauth_config",
+        lambda: SimpleNamespace(port=8042, base_uri="http://localhost"),
+    )
+
+    calls = []
+
+    def fake_ensure(transport_mode, port, base_uri):
+        calls.append((transport_mode, port, base_uri))
+        return True, ""
+
+    monkeypatch.setattr(
+        oauth_callback_server, "ensure_oauth_callback_available", fake_ensure
+    )
+
+    success, error = oauth_callback_server.ensure_stdio_oauth_callback_available()
+
+    assert success is True
+    assert error == ""
+    assert calls == [("stdio", 8042, "http://localhost")]
 
 
 def test_oauth_callback_missing_state_fallback_follows_single_user_mode(monkeypatch):

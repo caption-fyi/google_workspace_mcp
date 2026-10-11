@@ -59,12 +59,11 @@ HTTP transport serves MCP at:
 http://localhost:8000/mcp/
 ```
 
-For public OAuth 2.1 PKCE clients, leave `GOOGLE_OAUTH_CLIENT_SECRET` unset and set a signing key:
+MCP clients use PKCE without a client secret; the server still requires the Google client secret for code exchange. Credentials may also come from `GOOGLE_CLIENT_SECRET_PATH`:
 
 ```bash
 export MCP_ENABLE_OAUTH21=true
-export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
-export FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY="$(openssl rand -hex 32)"
+export GOOGLE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 
 uvx workspace-mcp --transport streamable-http --tool-tier core
 ```
@@ -124,6 +123,9 @@ uv run main.py --tool-tier core
 uv run main.py --tool-tier extended
 uv run main.py --tool-tier complete
 
+# Disable individual tools.
+uv run main.py --disabled-tools send_gmail_message create_drive_file
+
 # Combine service selection and tiering.
 uv run main.py --tools gmail drive --tool-tier extended
 
@@ -140,7 +142,7 @@ Rules enforced by `main.py`:
 - `--permissions` and `--read-only` are mutually exclusive.
 - `--permissions` and `--tools` are mutually exclusive.
 - `--single-user` is incompatible with OAuth 2.1, stateless mode, and service account mode.
-- `WORKSPACE_MCP_TOOLS`, `WORKSPACE_MCP_TOOL_TIER`, `WORKSPACE_MCP_READ_ONLY`, and `WORKSPACE_MCP_PERMISSIONS` provide equivalent env-based configuration.
+- `WORKSPACE_MCP_TOOLS`, `WORKSPACE_MCP_TOOL_TIER`, `WORKSPACE_MCP_READ_ONLY`, `WORKSPACE_MCP_PERMISSIONS`, and `WORKSPACE_MCP_DISABLED_TOOLS` provide equivalent env-based configuration.
 - Malformed non-empty env values fail closed at startup.
 
 Permission levels:
@@ -149,16 +151,9 @@ Permission levels:
 - Tasks: `readonly`, `manage`, `full`.
 - Other services: `readonly`, `full`.
 
-### Docker
+### Railway
 
-```bash
-docker build -t workspace-mcp .
-docker run --rm -p 8000:8000 \
-  -e GOOGLE_OAUTH_CLIENT_ID="..." \
-  -e GOOGLE_OAUTH_CLIENT_SECRET="..." \
-  -e MCP_ENABLE_OAUTH21=true \
-  workspace-mcp --transport streamable-http
-```
+`railway.json` builds with Railpack, installs the Valkey extra, and starts streamable HTTP. Set the cloud deployment variables below and configure persistent Valkey storage. Railway probes `/health`; `/health/ready` checks OAuth storage readiness.
 
 ## Authentication Modes
 
@@ -295,7 +290,7 @@ Configure OAuth client secrets and Valkey credentials as deployment secrets.
 | Variable | Purpose |
 | --- | --- |
 | `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth client ID. Required for OAuth modes. |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret. Optional for public OAuth 2.1 PKCE clients. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret. Required for built-in OAuth 2.1, including PKCE clients. |
 | `GOOGLE_CLIENT_SECRET_PATH` | Path to a `client_secret.json` file. |
 | `GOOGLE_CLIENT_SECRETS` | Backward-compatible alias for `GOOGLE_CLIENT_SECRET_PATH`. |
 | `USER_GOOGLE_EMAIL` | Default user email outside OAuth 2.1. Required for service account mode. |
@@ -320,6 +315,14 @@ Configure OAuth client secrets and Valkey credentials as deployment secrets.
 | `WORKSPACE_MCP_URL` | Default remote MCP endpoint for `workspace-cli`. |
 | `WORKSPACE_ATTACHMENT_DIR` | Downloaded attachment directory. Defaults to `~/.workspace-mcp/attachments/`. |
 | `ALLOWED_FILE_DIRS` | Path allowlist for local file reads. Sensitive paths remain blocked. |
+| `WORKSPACE_MCP_DISABLE_LOCAL_FILES` | Disables caller-supplied local file paths for hosted deployments. |
+| `WORKSPACE_MCP_MAX_FILE_BYTES` | Caps buffered file downloads. |
+| `WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES` | Caps inline files in stateless responses. |
+| `WORKSPACE_MCP_MAX_OFFICE_XML_BYTES` | Caps expanded Office XML. |
+| `WORKSPACE_MCP_FILES_GCS_BUCKET` | Attachment staging bucket; requires the `gcs` extra. |
+| `WORKSPACE_MCP_FILES_GCS_PREFIX` | Attachment object prefix; defaults to `attachments`. |
+| `WORKSPACE_MCP_SESSION_IDLE_TIMEOUT` | HTTP session idle timeout in seconds. |
+| `WORKSPACE_MCP_READINESS_TIMEOUT_SECONDS` | Dependency readiness probe timeout. |
 
 ### Tool Access
 
@@ -329,6 +332,7 @@ Configure OAuth client secrets and Valkey credentials as deployment secrets.
 | `WORKSPACE_MCP_TOOL_TIER` | `core`, `extended`, or `complete`. |
 | `WORKSPACE_MCP_READ_ONLY` | `true`, `1`, or `yes` enables read-only scope mode. |
 | `WORKSPACE_MCP_PERMISSIONS` | Space-separated `service:level` entries. |
+| `WORKSPACE_MCP_DISABLED_TOOLS` | Comma-separated tool names to disable. |
 
 ### SQL Tools
 
@@ -354,7 +358,7 @@ Policy database authorization has a combined five-second budget for pool creatio
 | `MCP_ENABLE_OAUTH21` | Enables OAuth 2.1 mode. |
 | `WORKSPACE_MCP_STATELESS_MODE` | Enables stateless mode. Requires OAuth 2.1. |
 | `EXTERNAL_OAUTH21_PROVIDER` | Uses external bearer-token auth. Requires OAuth 2.1. |
-| `FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY` | Signing/encryption key material. Required for public OAuth 2.1 clients without a client secret. |
+| `FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY` | Optional signing/encryption key material; otherwise derived from the Google client secret. |
 | `WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS` | Allowlist for dynamically registered client redirect URIs. |
 | `WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND` | `memory`, `disk`, or `valkey`. |
 | `WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY` | Disk OAuth proxy storage directory. |
@@ -397,7 +401,7 @@ Current tiered tool counts:
 | Tier | Inclusive tool count | Use case |
 | --- | ---: | --- |
 | `core` | 43 | Essential search, read, create, and common modify operations. |
-| `extended` | 89 | Core plus management, filtering, batch, and advanced operations. |
+| `extended` | 87 | Core plus management, filtering, batch, and advanced operations. |
 | `complete` | 119 | Full tiered tool surface. |
 
 If you run without `--tool-tier`, the server imports every registered tool for the selected services. Tiered mode filters to the tools listed below.
@@ -410,7 +414,7 @@ If you run without `--tool-tier`, the server imports every registered tool for t
 
 ### Drive
 
-- Core: `search_drive_files`, `get_drive_file_content`, `get_drive_file_download_url`, `create_drive_file`, `create_drive_folder`, `import_to_google_doc`, `get_drive_shareable_link`
+- Core: `search_drive_files`, `get_drive_file_content`, `get_drive_file_download_url`, `create_drive_file`, `create_drive_folder`, `import_to_google_doc`, `import_to_google_slides`, `import_to_google_sheets`, `get_drive_shareable_link`
 - Extended: `list_drive_items`, `copy_drive_file`, `update_drive_file`, `manage_drive_access`, `set_drive_file_permissions`
 - Complete: `get_drive_file_permissions`, `check_drive_file_public_access`
 
@@ -430,7 +434,7 @@ If you run without `--tool-tier`, the server imports every registered tool for t
 
 - Core: `create_spreadsheet`, `read_sheet_values`, `modify_sheet_values`
 - Extended: `list_spreadsheets`, `get_spreadsheet_info`, `format_sheet_range`, `list_sheet_tables`
-- Complete: `create_sheet`, `append_table_rows`, `resize_sheet_dimensions`, `move_sheet_rows`, `list_spreadsheet_comments`, `manage_spreadsheet_comment`, `manage_conditional_formatting`
+- Complete: `create_sheet`, `manage_sheet_tab`, `append_table_rows`, `resize_sheet_dimensions`, `move_sheet_rows`, `list_spreadsheet_comments`, `manage_spreadsheet_comment`, `manage_conditional_formatting`, `manage_named_range`
 
 ### Chat
 
@@ -470,8 +474,8 @@ If you run without `--tool-tier`, the server imports every registered tool for t
 
 ### Apps Script
 
-- Core: `list_script_projects`, `get_script_project`, `get_script_content`, `create_script_project`, `update_script_content`, `run_script_function`, `generate_trigger_code`
-- Extended: `manage_deployment`, `list_deployments`, `delete_script_project`, `list_versions`, `create_version`, `get_version`, `list_script_processes`, `get_script_metrics`
+- Core: `get_script_project`, `manage_script_project`, `manage_script_content`, `run_script_function`, `generate_trigger_code`
+- Extended: `list_script_deployments`, `manage_deployment`, `get_script_version`, `manage_script_version`, `get_script_activity`, `manage_script_trigger`
 - Complete: none
 
 ## Client Examples
@@ -541,9 +545,11 @@ Default endpoint:
 http://localhost:8000/mcp
 ```
 
-Override it with `--url` or `WORKSPACE_MCP_URL`.
+Override it with `--url` or `WORKSPACE_MCP_URL`. Install globally with `uv tool install .`; the unrelated PyPI package named `workspace-cli` is not this client.
 
 Use `workspace-cli list --json` to inspect the MCP metadata an LLM client can receive: server initialization data plus tool descriptions, input schemas, output schemas, annotations, and tags.
+
+Tool arguments accept camelCase aliases for declared snake_case parameters. Explicit snake_case values take precedence.
 
 ## Development
 
@@ -580,6 +586,8 @@ google_workspace_mcp/
 ```
 
 Tool modules register functions with `@server.tool()`. Authentication is usually handled by `@require_google_service()` or `@require_multiple_services()` decorators, which inject Google API clients and enforce scopes.
+
+Optional tracing requires the `otel` extra and `OTEL_EXPORTER_OTLP_ENDPOINT`. User email attributes remain disabled unless `WORKSPACE_MCP_OTEL_USER_EMAIL=true`.
 
 ## Security Notes
 

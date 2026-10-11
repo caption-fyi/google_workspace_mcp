@@ -28,7 +28,11 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.google_auth import handle_auth_callback, check_client_secrets
-from auth.oauth_config import get_oauth_redirect_uri
+from auth.oauth_config import (
+    get_oauth_redirect_uri,
+    get_oauth_config,
+    get_transport_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +299,10 @@ class MinimalOAuthServer:
                     port=self.port,
                     log_level="warning",
                     access_log=False,
+                    # Match FastMCP's own uvicorn config: uvicorn's "auto"
+                    # default resolves to the deprecated legacy-websockets
+                    # implementation whenever `websockets` is installed.
+                    ws="websockets-sansio",
                 )
                 self.server = uvicorn.Server(config)
                 asyncio.run(self.server.serve())
@@ -429,6 +437,24 @@ def ensure_oauth_callback_available(
         error_msg = f"Unknown transport mode: {transport_mode}"
         logger.error(error_msg)
         return False, error_msg
+
+
+def ensure_stdio_oauth_callback_available() -> tuple[bool, str]:
+    """
+    Lazily start the stdio OAuth-callback / attachment listener on demand.
+
+    Binding the callback port is deferred until it is actually needed — an auth
+    flow starting or an attachment URL being handed out — so short-lived stdio
+    spawns that do neither never occupy a port in the fallback range (issue #832).
+
+    No-op (returns success) outside stdio transport, where the main HTTP server
+    already serves these routes. Uses the active OAuth config so the listener
+    binds the same port the redirect and attachment URLs are composed from.
+    """
+    if get_transport_mode() != "stdio":
+        return True, ""
+    config = get_oauth_config()
+    return ensure_oauth_callback_available("stdio", config.port, config.base_uri)
 
 
 def cleanup_oauth_callback_server():

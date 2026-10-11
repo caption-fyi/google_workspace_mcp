@@ -31,6 +31,8 @@ from gcontacts.contacts_tools import (  # noqa: E402
     _coerce_relation_input,
     _coerce_url_input,
     _coerce_user_defined_input,
+)
+from gcontacts.contacts_helpers import (  # noqa: E402
     _format_contact,
     _merge_nicknames,
     _merge_relations,
